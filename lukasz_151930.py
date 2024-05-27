@@ -15,7 +15,7 @@ class Card_status(Enum):
 
 class ExtendedPlayer(Player):
     '''
-    A player class with some usefull functions
+    A player class that collects some usefull informations and has common functions
     '''
     def __init__(self, name):
         super(ExtendedPlayer,self).__init__(name)
@@ -29,6 +29,8 @@ class ExtendedPlayer(Player):
         self.estimated_game_pile = []
         self.opponent_hand = []
         self.card_statuses = np.full((self.best_card-self.worst_card+1,self.n_colors),Card_status.UNKNOWN)
+
+        self.all_cards = [(n,c) for n in range(self.worst_card,self.best_card+1) for c in range(self.n_colors)]
 
 
     @property
@@ -80,7 +82,7 @@ class ExtendedPlayer(Player):
         return None
     
     def _get_next_card_from(self,card_number,cards):
-        better_cards = tuple(filter(lambda card:card != None and card[0]>=card_number,cards))
+        better_cards = tuple(filter(lambda card:card != None and self._get_card_status(*card) != Card_status.OPPONENT and card[0]>=card_number,cards))
 
         if len(better_cards) == 0: return None
 
@@ -172,7 +174,7 @@ def safe_div(a,b):
 
 def mixed_strats(payoff:np.array):
     '''
-        Calculate mixed strategy for 2x2 payoff matrix
+        Calculate mixed strategy for 2x2 payoff for cheating, checking and drawing
     '''
     #A = np.vstack((payoff[0,:,0]-payoff[1,:,0],payoff[0,:,1]-payoff[1,:,1]))
     #b = np.array([payoff[0,0,0]-payoff[0,1,0],payoff[0,0,1]-payoff[1,0,1]])
@@ -203,7 +205,7 @@ class Lukasz151930(ExtendedPlayer):
     def _card_util(self,card):
         return card[0] - self.best_card -1 if card != None else self.avg_card_util
 
-    def _calculate_cost_matrix(self,declared_card,placer_cards,checker_cards):
+    def _calculate_cost_matrix(self,declared_card,placer_cards,checker_cards,can_place = True):
         self.avg_card_util = self._get_average_util_of(Card_status.UNKNOWN if not self._have_seen_all else Card_status.OPPONENT)
         payoff_matrix = np.zeros((2,2,2))# first dim, cheat or not, #second dim check or not #third dim cheating player, checking player
 
@@ -212,6 +214,7 @@ class Lukasz151930(ExtendedPlayer):
 
         # utility of top 2 cards in pile
         card_to_draw_util = sum([self._card_util(card) for card in self._cards_to_draw(2)])
+        three_to_draw_util = sum([self._card_util(card) for card in self._cards_to_draw(3)])
 
         # utility of placers hand
         placer_util = sum([self._card_util(card) for card in placer_cards])
@@ -231,15 +234,15 @@ class Lukasz151930(ExtendedPlayer):
         # utility of equal to declared for checker
         equal_card_util_check = self._card_util(self._get_next_card_from(declared_card[0],checker_cards))
 
-        payoff_matrix[0,0,0] = placer_util + card_to_draw_util 
+        payoff_matrix[0,0,0] = placer_util + card_to_draw_util
         payoff_matrix[0,1,0] = placer_util - cheated_card_util
-        payoff_matrix[1,0,0] = placer_util - declared_card_util - worst_card_util
-        payoff_matrix[1,1,0] = placer_util - declared_card_util
+        payoff_matrix[1,0,0] = placer_util - (declared_card_util + worst_card_util) if can_place else three_to_draw_util
+        payoff_matrix[1,1,0] = placer_util - (declared_card_util if can_place else three_to_draw_util)
 
         payoff_matrix[0,0,1] = checker_util - worst_card_util
         payoff_matrix[0,1,1] = checker_util - equal_card_util_check
-        payoff_matrix[1,0,1] = checker_util + card_to_draw_util + cheated_card_util
-        payoff_matrix[1,1,1] = checker_util - equal_card_util_check
+        payoff_matrix[1,0,1] = checker_util + card_to_draw_util + cheated_card_util + -9999 if not can_place else 0
+        payoff_matrix[1,1,1] = checker_util + -equal_card_util_check if can_place else - worst_card_util
 
         return payoff_matrix
 
@@ -250,8 +253,8 @@ class Lukasz151930(ExtendedPlayer):
         mean = np.mean(unknowns)
         return mean
 
-    def _get_mixed_strategy_probs(self,declared_card,placer_cards,checker_cards):
-        return mixed_strats(self._calculate_cost_matrix(declared_card,placer_cards,checker_cards))
+    def _get_mixed_strategy_probs(self,declared_card,placer_cards,checker_cards,can_place=True):
+        return mixed_strats(self._calculate_cost_matrix(declared_card,placer_cards,checker_cards,can_place))
 
     # def _calc_hand_util(self,hand):
     #     util = 0
@@ -280,13 +283,17 @@ class Lukasz151930(ExtendedPlayer):
         #### player randomly decides whether to cheat or not
 
         probs = self._get_mixed_strategy_probs(declaration if declaration != None else top_card,
-                                               self.cards,self.opponent_hand)[0]
+                                               self.cards,self.opponent_hand,
+                                               can_place= declaration != None)[0]
 
         # probs = np.array([self._turns_to_win(),self.opponents_turns_to_win],dtype=np.float64)
         # probs /= np.sum(probs)
-        cheat = np.random.choice([True, False],p=probs if probs != None else [0.5,0.5])
+        cheat = np.random.choice([True, False],p=probs if probs != None else [0.2,0.8])
 
-        if card == None:
+        if not cheat and card == None: #tactical draw? hopefully...
+            return "draw"
+
+        if card == None: # if not draw then cheat
             cheat = True
 
         ### if he decides to cheat, use worst card
@@ -294,7 +301,9 @@ class Lukasz151930(ExtendedPlayer):
             declaration = next_card if next_card != None else top_card
             card = worst_card
         
-        declaration = self._fix_card(declaration if declaration != None else worst_card,top_card)
+            declaration = self._get_next_card_from(top_card[0],self.all_cards)
+            if declaration == None:
+                declaration = self._fix_card(declaration if declaration != None else worst_card,top_card)
 
         ### return the decision (true card) and declaration (player's declaration)
         self._add_to_pile(card)
