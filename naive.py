@@ -45,7 +45,7 @@ class Naive(ExtendedPlayer):
             declaration = next_card if next_card != None else top_card
             card = worst_card
         
-        declaration = self._fix_card(declaration,top_card)
+            declaration = self._fix_card(declaration,top_card)
 
         ### return the decision (true card) and declaration (player's declaration)
         self._add_to_pile(card)
